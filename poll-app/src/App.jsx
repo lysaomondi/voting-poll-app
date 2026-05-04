@@ -4,16 +4,32 @@ import PollList from "./components/PollList";
 import "./index.css";
 
 const App = () => {
-  const [options, setOptions] = useState([]);
-  const [hasVoted, setHasVoted] = useState(false);
+  const defaultOptions = [
+  { id: 1, text: "React", votes: 0 },
+  { id: 2, text: "Vue", votes: 0 },
+  { id: 3, text: "Angular", votes: 0 },
+];
+
+const [options, setOptions] = useState(() => {
+  return JSON.parse(localStorage.getItem("options")) || defaultOptions;
+});
+
+const [hasVoted, setHasVoted] = useState(() => {
+  return JSON.parse(localStorage.getItem("hasVoted")) || false;
+});
 
   useEffect(() => {
-    const savedOptions = JSON.parse(localStorage.getItem("options")) || [];
-    const savedVote = JSON.parse(localStorage.getItem("hasVoted")) || false;
+  const savedOptions = JSON.parse(localStorage.getItem("options"));
+  const savedVote = JSON.parse(localStorage.getItem("hasVoted"));
 
+  if (savedOptions) {
     setOptions(savedOptions);
+  }
+
+  if (savedVote !== null) {
     setHasVoted(savedVote);
-  }, []);
+  }
+}, []);
 
   useEffect(() => {
     localStorage.setItem("options", JSON.stringify(options));
@@ -26,6 +42,12 @@ const App = () => {
       text,
       votes: 0,
     };
+    const exists = options.some((opt) => opt.text.toLowerCase() === text.toLowerCase());
+    if (exists) {
+      alert("Option already exists!");
+      return;
+    }
+
     setOptions([...options, newOption]);
   };
 
