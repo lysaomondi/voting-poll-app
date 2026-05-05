@@ -26,7 +26,7 @@ const PollForm = ({ addOption }) => {
         className="flex-1 border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-400"
       />
 
-      <button className="bg-green-500 hover:bg-green-600 text-white px-4 rounded-lg">
+      <button className="bg-green-500 hover:bg-blue-600 text-white px-4 rounded-lg">
         Add
       </button>
     </form>

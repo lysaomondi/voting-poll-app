@@ -1,86 +1,131 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, use } from "react";
 import PollForm from "./components/PollForm";
 import PollList from "./components/PollList";
 import Navbar from "./components/Navbar";
 import "./index.css";
+import Loading from "./components/Loading";
 
 import { db } from "./firebase";
 import {
+  increment,
+  onSnapshot,
   collection,
   addDoc,
+  getDoc,
   getDocs,
+  setDoc,
   updateDoc,
   doc,
 } from "firebase/firestore";
 
 
 
- const App = () => {
-  const defaultOptions = [
-  { id: 1, text: "React", votes: 0 },
-  { id: 2, text: "Vue", votes: 0 },
-  { id: 3, text: "Angular", votes: 0 },
-];
-
- const [options, setOptions] = useState(() => {
-  return JSON.parse(localStorage.getItem("options")) || defaultOptions;
-});
-
-const [hasVoted, setHasVoted] = useState(() => {
-  return JSON.parse(localStorage.getItem("hasVoted")) || false;
-});
-
+function App() {
   useEffect(() => {
-  const savedOptions = JSON.parse(localStorage.getItem("options"));
-  const savedVote = JSON.parse(localStorage.getItem("hasVoted"));
- 
-   if (savedOptions) {
-    setOptions(savedOptions);
-  }
+  const seedData = async () => {
+    const snapshot = await getDocs(collection(db, "options"));
 
-  if (savedVote !== null) {
-    setHasVoted(savedVote);
-  }
+    if (!snapshot.empty) return;
+
+    const defaultOptions = [
+      { id: "react", text: "React", votes: 0 },
+      { id: "vue", text: "Vue", votes: 0 },
+      { id: "angular", text: "Angular", votes: 0 }
+    ];
+
+    await Promise.all(
+      defaultOptions.map((opt) =>
+        setDoc(doc(db, "options", opt.id), {
+          text: opt.text,
+          votes: 0
+        })
+      )
+    );
+  };
+
+  seedData();
+}, []);
+ 
+
+const [options, setOptions] = useState([]);
+const [loading, setLoading] = useState(true);
+const [voterId] = useState(() => {
+  return localStorage.getItem("voterId") || crypto.randomUUID();
+});
+useEffect(() => {
+  localStorage.setItem("voterId", voterId);
 }, []);
 
-  useEffect(() => {
-    localStorage.setItem("options", JSON.stringify(options));
-    localStorage.setItem("hasVoted", JSON.stringify(hasVoted));
-  }, [options, hasVoted]);
- 
-  const addOption = (text) => {
-    const newOption = {
-      id: Date.now(),
-      text,
-      votes: 0,
-    };
-    const exists = options.some((opt) => opt.text.toLowerCase() === text.toLowerCase());
-    if (exists) {
-      alert("Option already exists!");
+  useEffect(()=> {
+    const unsub = onSnapshot(collection(db, "options"), (snapshot) => {
+      const data = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data(), }));
+      setOptions(data);
+      setLoading(false);
+    });
+
+    return () => unsub();
+  }, []);
+
+  
+  const addOption = async (text) => {
+  const id = text.toLowerCase().replace(/\s+/g, "-");
+  const optionRef = doc(db, "options", id);
+
+  const existing = await getDoc(optionRef);
+
+  if (existing.exists()) {
+    alert("Option already exists!");
+    return;
+  }
+
+  await setDoc(optionRef, {
+    text,
+    votes: 0,
+  });
+};
+const handleVote = async (id) => {
+  try {
+    console.log("Voting for:", id);
+
+    const voteId = `${voterId}_${id}`;
+    const voteRef = doc(db, "votes", voteId);
+
+    const voteSnap = await getDoc(voteRef);
+
+    if (voteSnap.exists()) {
+      alert("You already voted for this option");
       return;
     }
 
-    setOptions([...options, newOption]);
-  };
+    const optionRef = doc(db, "options", id);
 
-  const handleVote = (id) => {
-    if (hasVoted) return;
+    await updateDoc(optionRef, {
+      votes: increment(1),
+    });
 
-    const updated = options.map((opt) =>
-      opt.id === id ? { ...opt, votes: opt.votes + 1 } : opt
-    );
+    await setDoc(voteRef, {
+      optionId: id,
+      voterId,
+    });
 
-    setOptions(updated);
-    setHasVoted(true);
-  };
-
-  const resetVotes = () => {
-    const reset = options.map((opt) => ({ ...opt, votes: 0 }));
-    setOptions(reset);
-    setHasVoted(false);
-  };
+    console.log("Vote successful");
+  } catch (error) {
+    console.error("VOTE ERROR:", error);
+  }
+};
+ 
+  
  
 
+  const resetVotes =async () => {
+    await Promise.all(options.map((opt) =>{
+      const optionRef = doc(db, "options", opt.id);
+      return updateDoc(optionRef, { votes: 0 });
+    }));
+     };
+ 
+if (loading)
+  { return <Loading />;}
   return (
     <>
     <Navbar />
@@ -97,7 +142,6 @@ const [hasVoted, setHasVoted] = useState(() => {
         <PollList
           options={options}
           handleVote={handleVote}
-          hasVoted={hasVoted}
         />
 
         <button
