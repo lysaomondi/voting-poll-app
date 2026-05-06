@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from "react";
 import PollForm from "./components/PollForm";
 import PollList from "./components/PollList";
@@ -24,79 +23,83 @@ import {
   writeBatch, 
 } from "firebase/firestore";
 
-const App = () => {
-  const defaultOptions = [
-    { id: 1, text: "React", votes: 0 },
-    { id: 2, text: "Vue", votes: 0 },
-    { id: 3, text: "Angular", votes: 0 },
-  ];
+function App() {
+  const [options, setOptions] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [user, setUser] = useState(null); 
 
-  const [options, setOptions] = useState(() => {
-    return JSON.parse(localStorage.getItem("options")) || defaultOptions;
-  });
-
-  const [hasVoted, setHasVoted] = useState(() => {
-    return JSON.parse(localStorage.getItem("hasVoted")) || false;
+  const [voterId] = useState(() => {
+    return localStorage.getItem("voterId") || crypto.randomUUID();
   });
 
   useEffect(() => {
-    const savedOptions = JSON.parse(localStorage.getItem("options"));
-    const savedVote = JSON.parse(localStorage.getItem("hasVoted"));
+    localStorage.setItem("voterId", voterId);
+  }, [voterId]);
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+      setLoading(false);
+    });
+    return () => unsubscribe();
+  }, []);
+  useEffect(() => {
+    const optionsCollection = collection(db, "options");
 
-    if (savedOptions) {
-      setOptions(savedOptions);
-    }
+    const unsub = onSnapshot(optionsCollection, (snapshot) => {
+      if (snapshot.empty) {
+        seedData();
+      } else {
+        const data = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+        setOptions(data);
+        setLoading(false);
+      }
+    });
 
-    if (savedVote !== null) {
-      setHasVoted(savedVote);
-    }
+return () => unsub();
   }, []);
 
-  useEffect(() => {
-    localStorage.setItem("options", JSON.stringify(options));
-    localStorage.setItem("hasVoted", JSON.stringify(hasVoted));
-  }, [options, hasVoted]);
-
-  const addOption = (text) => {
-    const newOption = {
-      id: Date.now(),
-      text,
-      votes: 0,
-    };
-    const exists = options.some(
-      (opt) => opt.text.toLowerCase() === text.toLowerCase(),
-    );
-    if (exists) {
-      alert("Option already exists!");
-      return;
+  const seedData = async () => {
+    const defaultOptions = [
+      { id: "react", text: "React" },
+      { id: "vue", text: "Vue" },
+      { id: "angular", text: "Angular" }
+    ];
+    try {
+      for (const opt of defaultOptions) {
+        await setDoc(doc(db, "options", opt.id), { text: opt.text, votes: 0 });
+      }
+      setLoading(false);
+    } catch (e) {
+      console.error("Seed failed:", e);
+      setLoading(false);
     }
-
-    setOptions([...options, newOption]);
   };
 
   const handleVote = async (id) => {
     try {
       const activeVoterId = user ? user.uid : voterId;
 
-      const votesRef = collection(db, "votes");
-      const q = query(votesRef, where("voterId", "==", activeVoterId));
-      const voteQuerySnapshot = await getDocs(q);
+  const votesRef = collection(db, "votes");
+  const q = query(votesRef, where("voterId", "==", activeVoterId));
+  const voteQuerySnapshot = await getDocs(q);
 
-      if (!voteQuerySnapshot.empty) {
-        alert("You have already cast your one allowed vote!");
-        return;
-      }
+  if (!voteQuerySnapshot.empty) {
+    alert("You have already cast your one allowed vote!");
+    return;
+  }
 
-      const optionRef = doc(db, "options", id);
-      await updateDoc(optionRef, { votes: increment(1) });
+  const optionRef = doc(db, "options", id);
+  await updateDoc(optionRef, { votes: increment(1) });
 
-    const updated = options.map((opt) =>
-      opt.id === id ? { ...opt, votes: opt.votes + 1 } : opt,
-    );
+  await setDoc(doc(collection(db, "votes")), {
+    optionId: id,
+    voterId: activeVoterId,
+    timestamp: new Date()
+  });
 
-    } catch (error) {
-      console.error("VOTE ERROR:", error);
-    }
+} catch (error) {
+  console.error("VOTE ERROR:", error);
+}
   };
 
   const addOption = async (text) => {
@@ -115,29 +118,29 @@ const App = () => {
   try {
     const activeVoterId = user.uid;
 
-    const votesRef = collection(db, "votes");
-    const q = query(votesRef, where("voterId", "==", activeVoterId));
-    const snapshot = await getDocs(q);
+const votesRef = collection(db, "votes");
+const q = query(votesRef, where("voterId", "==", activeVoterId));
+const snapshot = await getDocs(q);
 
-    if (snapshot.empty) {
-      alert("You have not voted yet");
-      return;
-    }
+if (snapshot.empty) {
+  alert("You have not voted yet");
+  return;
+}
 
-    const batch = writeBatch(db);
+const batch = writeBatch(db);
 
-    snapshot.forEach((voteDoc) => {
-      const voteData = voteDoc.data();
-      const optionRef = doc(db, "options", voteData.optionId);
-      batch.update(optionRef, {
-        votes: increment(-1),
-      });
-      batch.delete(voteDoc.ref);
-    });
+snapshot.forEach((voteDoc) => {
+  const voteData = voteDoc.data();
+  const optionRef = doc(db, "options", voteData.optionId);
+  batch.update(optionRef, {
+    votes: increment(-1),
+  });
+  batch.delete(voteDoc.ref);
+});
 
-    await batch.commit();
+await batch.commit();
 
-    alert("Your vote has been reset!");
+alert("Your vote has been reset!");
   } catch (error) {
     console.error("RESET ERROR:", error);
   }
@@ -170,4 +173,6 @@ if (loading) return <Loading />;
   );
 }
 
-export default App;
+export default App; 
+     
+
