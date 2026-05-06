@@ -1,159 +1,189 @@
-import React, { useState, useEffect, use } from "react";
+
+import React, { useState, useEffect } from "react";
 import PollForm from "./components/PollForm";
 import PollList from "./components/PollList";
 import Navbar from "./components/Navbar";
 import "./index.css";
 import Loading from "./components/Loading";
+import Login from "./components/Login"; // <--- ADD THIS LINE
+import {auth} from "./firebase"; // <--- ADD THIS LINE
+import { onAuthStateChanged, signOut } from "firebase/auth"; // <--- ADD THIS LINE
 
 import { db } from "./firebase";
 import {
   increment,
   onSnapshot,
   collection,
-  addDoc,
   getDoc,
-  getDocs,
   setDoc,
   updateDoc,
   doc,
+  query,
+  where,
+  getDocs,
+  writeBatch, // Added for the reset fix
 } from "firebase/firestore";
 
-
-
 function App() {
-  useEffect(() => {
-  const seedData = async () => {
-    const snapshot = await getDocs(collection(db, "options"));
+  const [options, setOptions] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [user, setUser] = useState(null); // Track logged-in user
 
-    if (!snapshot.empty) return;
 
-    const defaultOptions = [
-      { id: "react", text: "React", votes: 0 },
-      { id: "vue", text: "Vue", votes: 0 },
-      { id: "angular", text: "Angular", votes: 0 }
-    ];
 
-    await Promise.all(
-      defaultOptions.map((opt) =>
-        setDoc(doc(db, "options", opt.id), {
-          text: opt.text,
-          votes: 0
-        })
-      )
-    );
-  };
-
-  seedData();
-}, []);
  
 
-const [options, setOptions] = useState([]);
-const [loading, setLoading] = useState(true);
-const [voterId] = useState(() => {
-  return localStorage.getItem("voterId") || crypto.randomUUID();
-});
-useEffect(() => {
-  localStorage.setItem("voterId", voterId);
-}, []);
 
-  useEffect(()=> {
-    const unsub = onSnapshot(collection(db, "options"), (snapshot) => {
-      const data = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data(), }));
-      setOptions(data);
-      setLoading(false);
+  // Voter ID logic (Fallback if not logged in)
+  const [voterId] = useState(() => {
+    return localStorage.getItem("voterId") || crypto.randomUUID();
+  });
+
+  useEffect(() => {
+    localStorage.setItem("voterId", voterId);
+  }, [voterId]);
+
+  // --- NEW: Auth State Listener ---
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Combined Listener: Syncs data and triggers seed if empty
+  useEffect(() => {
+    const optionsCollection = collection(db, "options");
+    
+    const unsub = onSnapshot(optionsCollection, (snapshot) => {
+      if (snapshot.empty) {
+        seedData();
+      } else {
+        const data = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+        setOptions(data);
+        setLoading(false);
+      }
     });
 
     return () => unsub();
   }, []);
 
-  
+  const seedData = async () => {
+    const defaultOptions = [
+      { id: "react", text: "React" },
+      { id: "vue", text: "Vue" },
+      { id: "angular", text: "Angular" }
+    ];
+    try {
+      for (const opt of defaultOptions) {
+        await setDoc(doc(db, "options", opt.id), { text: opt.text, votes: 0 });
+      }
+    } catch (e) {
+      console.error("Seed failed:", e);
+    }
+  };
+
+  const handleVote = async (id) => {
+    try {
+      // Use User ID if logged in, otherwise use local voterId
+      const activeVoterId = user ? user.uid : voterId;
+
+      const votesRef = collection(db, "votes");
+      const q = query(votesRef, where("voterId", "==", activeVoterId));
+      const voteQuerySnapshot = await getDocs(q);
+
+      if (!voteQuerySnapshot.empty) {
+        alert("You have already cast your one allowed vote!");
+        return;
+      }
+
+      const optionRef = doc(db, "options", id);
+      await updateDoc(optionRef, { votes: increment(1) });
+
+      await setDoc(doc(collection(db, "votes")), {
+        optionId: id,
+        voterId: activeVoterId,
+        timestamp: new Date()
+      });
+
+    } catch (error) {
+      console.error("VOTE ERROR:", error);
+    }
+  };
+
   const addOption = async (text) => {
-  const id = text.toLowerCase().replace(/\s+/g, "-");
-  const optionRef = doc(db, "options", id);
+    const id = text.toLowerCase().replace(/\s+/g, "-");
+    const optionRef = doc(db, "options", id);
+    const existing = await getDoc(optionRef);
+    if (existing.exists()) {
+      alert("Option already exists!");
+      return;
+    }
+    await setDoc(optionRef, { text, votes: 0 });
+  };
 
-  const existing = await getDoc(optionRef);
-
-  if (existing.exists()) {
-    alert("Option already exists!");
-    return;
-  }
-
-  await setDoc(optionRef, {
-    text,
-    votes: 0,
-  });
-};
-const handleVote = async (id) => {
+ 
+  const resetVotes = async () => {
   try {
-    console.log("Voting for:", id);
+    const activeVoterId = user.uid;
 
-    const voteId = `${voterId}_${id}`;
-    const voteRef = doc(db, "votes", voteId);
+    const votesRef = collection(db, "votes");
+    const q = query(votesRef, where("voterId", "==", activeVoterId));
+    const snapshot = await getDocs(q);
 
-    const voteSnap = await getDoc(voteRef);
-
-    if (voteSnap.exists()) {
-      alert("You already voted for this option");
+    if (snapshot.empty) {
+      alert("You have not voted yet");
       return;
     }
 
-    const optionRef = doc(db, "options", id);
+    const batch = writeBatch(db);
 
-    await updateDoc(optionRef, {
-      votes: increment(1),
+    snapshot.forEach((voteDoc) => {
+      const voteData = voteDoc.data();
+      const optionRef = doc(db, "options", voteData.optionId);
+
+      // decrement vote count
+      batch.update(optionRef, {
+        votes: increment(-1),
+      });
+
+      // delete ONLY this user's vote
+      batch.delete(voteDoc.ref);
     });
 
-    await setDoc(voteRef, {
-      optionId: id,
-      voterId,
-    });
+    await batch.commit();
 
-    console.log("Vote successful");
+    alert("Your vote has been reset!");
   } catch (error) {
-    console.error("VOTE ERROR:", error);
+    console.error("RESET ERROR:", error);
   }
 };
- 
-  
- 
+  if (!user) {
+    return <Login />;
+  }
+  if (loading) return <Loading />;
 
-  const resetVotes =async () => {
-    await Promise.all(options.map((opt) =>{
-      const optionRef = doc(db, "options", opt.id);
-      return updateDoc(optionRef, { votes: 0 });
-    }));
-     };
- 
-if (loading)
-  { return <Loading />;}
   return (
     <>
-    <Navbar />
-     <div className="min-h-screen bg-linear-to-br from-blue-50 to-indigo-100 p-4">
-      <div className="max-w-xl mx-auto bg-white shadow-xl rounded-2xl p-6">
-        
-        
-        <h1 className="text-10xl font-bold text-center text-blue-600 mb-6">
-          Poll App
-        </h1>
-
-        <PollForm addOption={addOption} />
-
-        <PollList
-          options={options}
-          handleVote={handleVote}
-        />
-
-        <button
-          onClick={resetVotes}
-          className="mt-6 w-full bg-red-500 hover:bg-red-600 text-white py-2 rounded-lg transition"
-        >
-          Reset Votes
-        </button>
+      <Navbar />
+      <div className="min-h-screen bg-slate-100 p-4">
+        <div className="max-w-xl mx-auto bg-white shadow-xl rounded-2xl p-6">
+          <h1 className="text-4xl font-bold text-center text-blue-600 mb-6">
+            Poll App
+          </h1>
+          <PollForm addOption={addOption} />
+          <PollList options={options} handleVote={handleVote} />
+          <button
+            onClick={resetVotes}
+            className="mt-6 w-full bg-red-500 hover:bg-red-600 text-white py-2 rounded-lg transition"
+          >
+            Reset Votes
+          </button>
+        </div>
       </div>
-    </div>
-  
-
-   </>);
+    </>
+  );
 }
-export default App;
+
+export default App; 
+     
